@@ -1,0 +1,25 @@
+{
+  "name": "pam-faithful",
+  "version": "0.0.1",
+  "description": "Faithful implementation of PAM authentication process in NodeJS.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rallias/pam-faithful.git"
+  },
+  "keywords": [
+    "PAM"
+  ],
+  "author": "Andrew Pietila",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/rallias/pam-faithful/issues"
+  },
+  "homepage": "https://github.com/rallias/pam-faithful#readme",
+  "dependencies": {
+    "nan": "^2.15.0"
+  }
+}
