@@ -13,7 +13,7 @@ struct pam_faithful_transaction
     Napi::ThreadSafeFunction promise;
     pam_handle_t *handle;
     int pam_status;
-    int num_msg;
+    unsigned int num_msg;
     const pam_message **msg;
     pam_response **resp;
 };
@@ -34,8 +34,7 @@ Napi::Value pam_start_ive_got_the_data(const Napi::CallbackInfo &info)
     pam_faithful_transaction *transaction = static_cast<pam_faithful_transaction *>(info.Data());
     if (info.Length() < 1)
     {
-        Napi::TypeError::New(info.Env(), "Insufficient arguments.");
-        return;
+        throw Napi::TypeError::New(info.Env(), "Insufficient arguments.");
     }
     else
     {
@@ -43,14 +42,13 @@ Napi::Value pam_start_ive_got_the_data(const Napi::CallbackInfo &info)
         {
             if (info[0].As<Napi::Array>().Length() < transaction->num_msg)
             {
-                Napi::Error::New(info.Env(), "Response count does not match message count.");
-                return;
+                throw Napi::Error::New(info.Env(), "Response count does not match message count.");
             }
             else
             {
                 pam_response **responses = (new pam_response *[transaction->num_msg]);
                 transaction->resp = responses;
-                for (int i = 0; i < transaction->num_msg; i++)
+                for (unsigned int i = 0; i < transaction->num_msg; i++)
                 {
                     responses[i] = pam_start_and_im_processing_it_line_by_line(info[0].As<Napi::Array>().Get(i).As<Napi::String>());
                 }
@@ -71,7 +69,7 @@ int pam_start_converser(int num_msg, const pam_message **msg, pam_response **res
     {
         transaction->baton.lock();
         Napi::Array value = Napi::Array::New(env, transaction->num_msg);
-        for (int i = 0; i < transaction->num_msg; i++)
+        for (unsigned int i = 0; i < transaction->num_msg; i++)
         {
             Napi::Object object = Napi::Object::New(env);
             const pam_message *thisMessage = *(transaction->msg + i);
@@ -116,6 +114,8 @@ int pam_start_converser(int num_msg, const pam_message **msg, pam_response **res
     transaction->num_msg = num_msg;
     transaction->msg = msg;
     transaction->convCallback.BlockingCall(transaction, callback);
+    // TODO: Handle the case where promises caught instead of returned.
+    return PAM_SUCCESS;
 }
 
 // pam_start = (service: string, user: string, convCallback: ({msg_style: int, msg: string}[]) => Promise<string[]>)|string[] => Promise<pam_handle>
@@ -125,33 +125,29 @@ Napi::Value PamStart(const Napi::CallbackInfo &info)
 
     if (info.Length() < 3)
     {
-        Napi::TypeError::New(info.Env(), "Wrong number of arguments.").ThrowAsJavaScriptException();
-        return;
+        throw Napi::TypeError::New(info.Env(), "Wrong number of arguments.");
     }
 
     if (!info[0].IsString())
     {
-        Napi::TypeError::New(info.Env(), "Argument 0 (service) must be a string.").ThrowAsJavaScriptException();
-        return;
+        throw Napi::TypeError::New(info.Env(), "Argument 0 (service) must be a string.");
     }
 
     if (!info[1].IsString())
     {
-        Napi::TypeError::New(info.Env(), "Argument 1 (username) must be a string.").ThrowAsJavaScriptException();
-        return;
+        throw Napi::TypeError::New(info.Env(), "Argument 1 (username) must be a string.");
     }
 
     if (!info[2].IsFunction())
     {
-        Napi::TypeError::New(info.Env(), "Argument 2 (convCallback) must be a function.").ThrowAsJavaScriptException();
-        return;
+        throw Napi::TypeError::New(info.Env(), "Argument 2 (convCallback) must be a function.");
     }
 
     transaction->service = info[0].ToString().Utf8Value();
     transaction->username = info[1].ToString().Utf8Value();
     transaction->baton.lock();
     Napi::Promise::Deferred deferred = Napi::Promise::Deferred::New(info.Env());
-    std::thread *thread = &std::thread(
+    std::thread thread = std::thread(
         [transaction]
         {
             transaction->baton.lock();
@@ -168,8 +164,8 @@ Napi::Value PamStart(const Napi::CallbackInfo &info)
         "pam_start thread",
         0,
         1,
-        [thread](Napi::Env)
-        { thread->join(); });
+        [&thread](Napi::Env)
+        { thread.join(); });
     transaction->promise = Napi::ThreadSafeFunction::New(
         info.Env(),
         Napi::Function::New(info.Env(), [](const Napi::CallbackInfo &info) {}),
