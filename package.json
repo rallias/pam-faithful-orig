@@ -20,6 +20,7 @@
   },
   "homepage": "https://github.com/rallias/pam-faithful#readme",
   "dependencies": {
-    "nan": "^2.15.0"
-  }
+    "node-addon-api": "^4.2.0"
+  },
+  "gypfile": true
 }

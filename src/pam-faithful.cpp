@@ -1,170 +1,207 @@
-#include <nan.h>
 #include <security/pam_appl.h>
+#include <napi.h>
+#include <thread>
+#include <mutex>
+#include <functional>
 
 struct pam_faithful_transaction
 {
-    const char *pam_service_name;
-    const char *pam_username;
-    Nan::Callback js_callback;
-    int num_message;
-    const pam_message **message;
-    pam_response **response;
-    uv_mutex_t *pam_working;
-    uv_sem_t *js_callback_working;
-    bool pam_waiting_data;
-    bool pam_done;
-    int pam_retval;
+    std::string service;
+    std::string username;
+    Napi::ThreadSafeFunction convCallback;
+    std::mutex baton;
+    Napi::ThreadSafeFunction promise;
     pam_handle_t *handle;
+    int pam_status;
+    int num_msg;
+    const pam_message **msg;
+    pam_response **resp;
 };
 
-void pam_start_check_resolve(pam_faithful_transaction *data)
+pam_response *pam_start_and_im_processing_it_line_by_line(Napi::String response)
 {
+    // ... and I swear it was in self defense.
+    pam_response *retdata = new pam_response;
+    retdata->resp = new char[response.Utf8Value().length() + 1];
+    size_t len = response.Utf8Value().copy(retdata->resp, response.Utf8Value().length());
+    retdata->resp[len] = '\0';
+    return retdata;
 }
 
-void pam_start_check(uv_check_t *handle)
+Napi::Value pam_start_ive_got_the_data(const Napi::CallbackInfo &info)
 {
-    pam_faithful_transaction *data = static_cast<pam_faithful_transaction *>(handle->data);
-    if (!uv_mutex_trylock(data->pam_working))
+    // When I named this function, I had the song "I Shot The Sheriff" stuck in my mind.
+    pam_faithful_transaction *transaction = static_cast<pam_faithful_transaction *>(info.Data());
+    if (info.Length() < 1)
     {
-        if (data->pam_waiting_data)
+        Napi::TypeError::New(info.Env(), "Insufficient arguments.");
+        return;
+    }
+    else
+    {
+        if (info[0].IsArray())
         {
-            Nan::HandleScope scope;
-            v8::Local<v8::Array> array = Nan::New<v8::Array>(data->num_message);
-            for (int i = 0; i < data->num_message; i++)
+            if (info[0].As<Napi::Array>().Length() < transaction->num_msg)
             {
-                v8::Local<v8::Object> message = Nan::New<v8::Object>();
-                const pam_message *thisMessage = *(data->message + i);
-                Nan::Set(message, Nan::New<v8::String>("msg_style").ToLocalChecked(), Nan::New<v8::Number>(thisMessage->msg_style));
-                Nan::Set(message, Nan::New<v8::String>("msg").ToLocalChecked(), Nan::New<v8::String>(thisMessage->msg).ToLocalChecked());
-                Nan::Set(array, i, message);
+                Napi::Error::New(info.Env(), "Response count does not match message count.");
+                return;
             }
-
-            v8::Local<v8::Value> args[1] = {array};
-
-            auto retData = data->js_callback.Call(1, args);
-            if (retData->IsPromise())
+            else
             {
+                pam_response **responses = (new pam_response *[transaction->num_msg]);
+                transaction->resp = responses;
+                for (int i = 0; i < transaction->num_msg; i++)
+                {
+                    responses[i] = pam_start_and_im_processing_it_line_by_line(info[0].As<Napi::Array>().Get(i).As<Napi::String>());
+                }
+                // TODO: Let it go, let it go.
             }
         }
-        else if (data->pam_done)
+        else if (info[0].IsString())
         {
-            uv_check_stop(handle);
-        }
-        else
-        {
-            uv_mutex_unlock(data->pam_working);
+            // TODO: Handle string case.
         }
     }
 }
 
 int pam_start_converser(int num_msg, const pam_message **msg, pam_response **resp, void *appdata_ptr)
 {
-    pam_faithful_transaction *data = static_cast<pam_faithful_transaction *>(appdata_ptr);
-    data->num_message = num_msg;
-    data->message = msg;
-    data->response = resp;
-    data->pam_waiting_data = true;
-    uv_mutex_unlock(data->pam_working);
-    uv_sem_wait(data->js_callback_working);
-    uv_mutex_lock(data->pam_working);
-    data->pam_waiting_data = false;
-    return PAM_SUCCESS;
-}
+    pam_faithful_transaction *transaction = static_cast<pam_faithful_transaction *>(appdata_ptr);
+    auto callback = [](Napi::Env env, Napi::Function jsCallback, pam_faithful_transaction *transaction)
+    {
+        transaction->baton.lock();
+        Napi::Array value = Napi::Array::New(env, transaction->num_msg);
+        for (int i = 0; i < transaction->num_msg; i++)
+        {
+            Napi::Object object = Napi::Object::New(env);
+            const pam_message *thisMessage = *(transaction->msg + i);
+            object.Set(Napi::String::New(env, "msg_style"), Napi::Number::New(env, thisMessage->msg_style));
+            object.Set(Napi::String::New(env, "message"), Napi::String::New(env, thisMessage->msg));
+            value.Set(i, object);
+        }
+        Napi::Value retData = jsCallback.Call({value});
 
-void pam_start_thread(uv_work_t *req)
-{
-    pam_faithful_transaction *data = static_cast<pam_faithful_transaction *>(req->data);
-    uv_mutex_lock(data->pam_working);
-
-    pam_conv *conversation;
-    conversation->appdata_ptr = data;
-    conversation->conv = pam_start_converser;
-    pam_handle_t *handle;
-
-    int retval = pam_start(data->pam_service_name, data->pam_username, conversation, &handle);
-    data->pam_retval = retval;
-    data->handle = handle;
-    data->pam_done = true;
-    uv_mutex_unlock(data->pam_working);
+        Napi::Function iveGotTheDataFunc = Napi::Function::New(env, pam_start_ive_got_the_data, NULL, (void *)transaction);
+        if (retData.IsPromise())
+        {
+            retData.As<Napi::Promise>().Get("then").As<Napi::Function>().Call({(Napi::Value)iveGotTheDataFunc});
+            // TODO: I mean, undefined is not the right thing to shove here, but...
+            retData.As<Napi::Promise>().Get("catch").As<Napi::Function>().Call({env.Undefined()});
+        }
+        else if (retData.IsArray() || retData.IsString())
+        {
+            iveGotTheDataFunc.Call({retData});
+        }
+        else if (retData.IsObject())
+        {
+            if (retData.As<Napi::Object>().Has("then") && retData.As<Napi::Object>().Get("then").IsFunction())
+            {
+                // It's a "promise". I suspect, although god-willing never plan on testing out, this is where Bluebird ends up.
+                retData.As<Napi::Object>().Get("then").As<Napi::Function>().Call({(Napi::Value)iveGotTheDataFunc});
+                if (retData.As<Napi::Object>().Has("catch") && retData.As<Napi::Object>().Get("catch").IsFunction())
+                {
+                    // And has the ability to fail.
+                    // TODO: I mean, undefined is not the right thing to shove here, but...
+                    retData.As<Napi::Object>().Get("catch").As<Napi::Function>().Call({env.Undefined()});
+                }
+            }
+        }
+        else
+        {
+            // WHAT ARE YOU DOING TO ME?!?!?
+            // TODO: Fail like we know we're supposed to do.
+        }
+    };
+    transaction->baton.lock();
+    transaction->num_msg = num_msg;
+    transaction->msg = msg;
+    transaction->convCallback.BlockingCall(transaction, callback);
 }
 
 // pam_start = (service: string, user: string, convCallback: ({msg_style: int, msg: string}[]) => Promise<string[]>)|string[] => Promise<pam_handle>
-NAN_METHOD(PamStart)
+Napi::Value PamStart(const Napi::CallbackInfo &info)
 {
+    pam_faithful_transaction *transaction = new pam_faithful_transaction;
+
     if (info.Length() < 3)
     {
-        Nan::ThrowTypeError("Wrong number of arguments.");
+        Napi::TypeError::New(info.Env(), "Wrong number of arguments.").ThrowAsJavaScriptException();
         return;
     }
 
-    v8::Local<v8::Value> serviceVal(info[0]);
-    if (!serviceVal->IsString())
+    if (!info[0].IsString())
     {
-        Nan::ThrowTypeError("Argument 0 (service) must be a string.");
+        Napi::TypeError::New(info.Env(), "Argument 0 (service) must be a string.").ThrowAsJavaScriptException();
         return;
     }
-    v8::Local<v8::Value> userVal(info[1]);
-    if (!userVal->IsString())
+
+    if (!info[1].IsString())
     {
-        Nan::ThrowTypeError("Argument 1 (user) must be a string.");
+        Napi::TypeError::New(info.Env(), "Argument 1 (username) must be a string.").ThrowAsJavaScriptException();
         return;
     }
-    v8::Local<v8::Value> convCallbackVal(info[2]);
-    if (!convCallbackVal->IsFunction())
+
+    if (!info[2].IsFunction())
     {
-        Nan::ThrowTypeError("Argument 2 (convCallback) must be a function.");
+        Napi::TypeError::New(info.Env(), "Argument 2 (convCallback) must be a function.").ThrowAsJavaScriptException();
         return;
     }
 
-    v8::Isolate *isolate = v8::Isolate::GetCurrent();
-
-    v8::String::Utf8Value serviceV8Str(isolate, serviceVal);
-    const std::string service(*serviceV8Str);
-
-    v8::String::Utf8Value userV8Str(isolate, userVal);
-    const std::string user(*userV8Str);
-
-    v8::Local<v8::Function> convCallbackLocalFunc = v8::Local<v8::Function>::Cast(convCallbackVal);
-
-    uv_loop_t *default_loop = uv_default_loop();
-    pam_faithful_transaction *transaction = new pam_faithful_transaction;
-    transaction->pam_username = user.c_str();
-    transaction->pam_service_name = service.c_str();
-    transaction->js_callback.Reset(convCallbackLocalFunc);
-
-    uv_mutex_init(transaction->pam_working);
-    uv_sem_init(transaction->js_callback_working, 0);
-
-    uv_work_t *req = new uv_work_t;
-    req->data = transaction;
-
-    uv_queue_work(default_loop, req, pam_start_thread, NULL);
-
-    // Course of action.
-    // We create the shared data, a pam_faithful_transaction.
-    // We create a new uv_work, pam_start_worker.
-    // We create a new uv_check, callback_handle.
-    // pam_auth_async locks pam_faithful_transaction.mutex.
-    // pam_auth_async calls pam_start.
-    // pam_start calls the C++ conv callback.
-    // C++ conv callback sets pam_faithful_transaction.message and unlocks pam_faithful_transaction.mutex, and waits on pam_faithful_transaction.js_callback_working.
-    // callback_handle queues JS callback on original thread.
-    // JS callback resolves promise, which posts js_callback_working.
-    // pam_auth_async continues PAM transaction.
-    // If C++ conv callback called again, go back to that step, otherwise, mark pam_faithful_transaction.pam_done true.
-    // Resolve the outer promise.
+    transaction->service = info[0].ToString().Utf8Value();
+    transaction->username = info[1].ToString().Utf8Value();
+    transaction->baton.lock();
+    Napi::Promise::Deferred deferred = Napi::Promise::Deferred::New(info.Env());
+    std::thread *thread = &std::thread(
+        [transaction]
+        {
+            transaction->baton.lock();
+            pam_conv *conversation = new pam_conv;
+            conversation->conv = pam_start_converser;
+            conversation->appdata_ptr = transaction;
+            transaction->pam_status = pam_start(transaction->service.c_str(), transaction->username.c_str(), conversation, &transaction->handle);
+            transaction->promise.Release();
+            transaction->convCallback.Release();
+        });
+    transaction->convCallback = Napi::ThreadSafeFunction::New(
+        info.Env(),
+        info[2].As<Napi::Function>(),
+        "pam_start thread",
+        0,
+        1,
+        [thread](Napi::Env)
+        { thread->join(); });
+    transaction->promise = Napi::ThreadSafeFunction::New(
+        info.Env(),
+        Napi::Function::New(info.Env(), [](const Napi::CallbackInfo &info) {}),
+        "pam_start promise resolution",
+        0,
+        1,
+        [transaction, deferred](Napi::Env env)
+        {
+            if (transaction->pam_status == PAM_SUCCESS)
+            {
+                // TODO: Resolve a wrapped pam_handle.
+                deferred.Resolve(env.Undefined());
+            }
+            else
+            {
+                deferred.Reject(Napi::Number::New(env, transaction->pam_status));
+            }
+        });
+    transaction->baton.unlock();
+    return deferred.Promise();
 }
 
-NAN_MODULE_INIT(init)
+Napi::Object init(Napi::Env env, Napi::Object exports)
 {
     // pam_start(3)
-    Nan::Set(target, Nan::New<v8::String>("pam_start").ToLocalChecked(), Nan::GetFunction(Nan::New<v8::FunctionTemplate>(PamStart)).ToLocalChecked());
+    exports.Set(Napi::String::New(env, "pam_start"), Napi::Function::New(env, PamStart));
 
     // pam_conv(3)
-    Nan::Set(target, Nan::New<v8::String>("PAM_PROMPT_ECHO_OFF").ToLocalChecked(), Nan::New(PAM_PROMPT_ECHO_OFF));
-    Nan::Set(target, Nan::New<v8::String>("PAM_PROMPT_ECHO_ON").ToLocalChecked(), Nan::New(PAM_PROMPT_ECHO_ON));
-    Nan::Set(target, Nan::New<v8::String>("PAM_ERROR_MSG").ToLocalChecked(), Nan::New(PAM_ERROR_MSG));
-    Nan::Set(target, Nan::New<v8::String>("PAM_TEXT_INFO").ToLocalChecked(), Nan::New(PAM_TEXT_INFO));
+    exports.Set(Napi::String::New(env, "PAM_PROMPT_ECHO_OFF"), Napi::Number::New(env, PAM_PROMPT_ECHO_OFF));
+    exports.Set(Napi::String::New(env, "PAM_PROMPT_ECHO_ON"), Napi::Number::New(env, PAM_PROMPT_ECHO_ON));
+    exports.Set(Napi::String::New(env, "PAM_ERROR_MSG"), Napi::Number::New(env, PAM_ERROR_MSG));
+    exports.Set(Napi::String::New(env, "PAM_TEXT_INFO"), Napi::Number::New(env, PAM_TEXT_INFO));
 }
 
-NODE_MODULE(pam_faithful, init);
+NODE_API_MODULE(pam_faithful, init);
