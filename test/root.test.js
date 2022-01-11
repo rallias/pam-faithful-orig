@@ -4,8 +4,8 @@ const os = require('os');
 
 beforeAll(async () => {
     try {
-        await linuxUser.addUser({ username: "pam-faithful-user", create_home: true, shell: "/bin/bash" })
-        await linuxUser.setPassword("pam-faithful-user", "pam-faithful-password");
+        console.log(await linuxUser.addUser({ username: "pam-faithful-user", create_home: true, shell: "/bin/bash" }));
+        console.log(await linuxUser.setPassword("pam-faithful-user", "pam-faithful-password"));
     } catch (err) {
         console.log(err);
         throw (err);
