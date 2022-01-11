@@ -26,6 +26,7 @@
   },
   "gypfile": true,
   "devDependencies": {
-    "jest": "^27.4.7"
+    "jest": "^27.4.7",
+    "linux-sys-user": "^1.1.3"
   }
 }
