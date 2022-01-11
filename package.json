@@ -4,7 +4,8 @@
   "description": "Faithful implementation of PAM authentication process in NodeJS.",
   "main": "index.js",
   "scripts": {
-    "test": "jest"
+    "test": "jest test/pre-sudo.test.js",
+    "test:root": "jest/sudo.test.js"
   },
   "repository": {
     "type": "git",
