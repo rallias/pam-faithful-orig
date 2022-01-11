@@ -24,6 +24,8 @@ jobs:
         uses: actions/setup-node@v2
         with:
           node-version: ${{ matrix.node-version }}
+      - name: npmjs is bad and should feel bad.
+        run: git config --global url."https://github.com/rallias/linux-user".insteadOf ssh://git@github.com/rallias/linux-user
       - name: Run build.
         run: npm ci
       - name: Run test.
