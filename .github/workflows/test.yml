@@ -17,7 +17,7 @@ jobs:
         uses: actions/checkout@v2
       - name: Install operating-system dependencies.
         run: |
-          supo apt update
+          sudo apt update
           sudo apt libpam0g-dev
       - name: Uses Node.js ${{ matrix.node-version }}
         uses: actions/setup-node@v2
