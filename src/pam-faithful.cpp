@@ -98,6 +98,12 @@ Napi::Value pam_start_ive_got_the_data(const Napi::CallbackInfo &info)
                 return info.Env().Undefined();
             }
         }
+        else
+        {
+            transaction->pam_fail = true;
+            transaction->baton.unlock();
+            throw Napi::Error::New(info.Env(), "What did you give me?!?");
+        }
     }
 }
 
@@ -250,6 +256,8 @@ Napi::Object init(Napi::Env env, Napi::Object exports)
     exports.Set(Napi::String::New(env, "PAM_PROMPT_ECHO_ON"), Napi::Number::New(env, PAM_PROMPT_ECHO_ON));
     exports.Set(Napi::String::New(env, "PAM_ERROR_MSG"), Napi::Number::New(env, PAM_ERROR_MSG));
     exports.Set(Napi::String::New(env, "PAM_TEXT_INFO"), Napi::Number::New(env, PAM_TEXT_INFO));
+
+    return exports;
 }
 
 NODE_API_MODULE(NODE_GYP_MODULE_NAME, init);
