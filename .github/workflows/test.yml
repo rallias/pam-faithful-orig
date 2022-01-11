@@ -18,7 +18,7 @@ jobs:
       - name: Install operating-system dependencies.
         run: |
           sudo apt update
-          sudo apt libpam0g-dev
+          sudo apt install libpam0g-dev
       - name: Uses Node.js ${{ matrix.node-version }}
         uses: actions/setup-node@v2
         with:
