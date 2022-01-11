@@ -16,7 +16,29 @@ struct pam_faithful_transaction
     unsigned int num_msg;
     const pam_message **msg;
     pam_response **resp;
+    bool pam_fail;
 };
+
+class PamHandleWrapper : public Napi::ObjectWrap<PamHandleWrapper>
+{
+public:
+    PamHandleWrapper(const Napi::CallbackInfo &info) : Napi::ObjectWrap<PamHandleWrapper>(info) {}
+
+    static void Initialize(Napi::Env env, Napi::Object exports)
+    {
+    }
+
+    void *pam_handle;
+};
+
+Napi::Value
+pam_start_and_they_say_it_is_a_promise_fail(const Napi::CallbackInfo &info)
+{
+    pam_faithful_transaction *transaction = static_cast<pam_faithful_transaction *>(info.Data());
+    transaction->pam_fail = true;
+    transaction->baton.unlock();
+    return info.Env().Undefined();
+}
 
 pam_response *pam_start_and_im_processing_it_line_by_line(Napi::String response)
 {
@@ -34,6 +56,8 @@ Napi::Value pam_start_ive_got_the_data(const Napi::CallbackInfo &info)
     pam_faithful_transaction *transaction = static_cast<pam_faithful_transaction *>(info.Data());
     if (info.Length() < 1)
     {
+        transaction->pam_fail = true;
+        transaction->baton.unlock();
         throw Napi::TypeError::New(info.Env(), "Insufficient arguments.");
     }
     else
@@ -42,6 +66,8 @@ Napi::Value pam_start_ive_got_the_data(const Napi::CallbackInfo &info)
         {
             if (info[0].As<Napi::Array>().Length() < transaction->num_msg)
             {
+                transaction->pam_fail = true;
+                transaction->baton.unlock();
                 throw Napi::Error::New(info.Env(), "Response count does not match message count.");
             }
             else
@@ -52,12 +78,25 @@ Napi::Value pam_start_ive_got_the_data(const Napi::CallbackInfo &info)
                 {
                     responses[i] = pam_start_and_im_processing_it_line_by_line(info[0].As<Napi::Array>().Get(i).As<Napi::String>());
                 }
-                // TODO: Let it go, let it go.
+                transaction->baton.unlock();
+                return info.Env().Undefined();
             }
         }
         else if (info[0].IsString())
         {
-            // TODO: Handle string case.
+            if (transaction->num_msg > 1)
+            {
+                transaction->pam_fail = true;
+                transaction->baton.unlock();
+                throw Napi::Error::New(info.Env(), "Response count does not match message count.");
+            }
+            else
+            {
+                pam_response *response = pam_start_and_im_processing_it_line_by_line(info[0].As<Napi::String>().As<Napi::String>());
+                transaction->resp = &response;
+                transaction->baton.unlock();
+                return info.Env().Undefined();
+            }
         }
     }
 }
@@ -80,11 +119,11 @@ int pam_start_converser(int num_msg, const pam_message **msg, pam_response **res
         Napi::Value retData = jsCallback.Call({value});
 
         Napi::Function iveGotTheDataFunc = Napi::Function::New(env, pam_start_ive_got_the_data, NULL, (void *)transaction);
+        Napi::Function itsDeadJimFunc = Napi::Function::New(env, pam_start_and_they_say_it_is_a_promise_fail, NULL, (void *)transaction);
         if (retData.IsPromise())
         {
             retData.As<Napi::Promise>().Get("then").As<Napi::Function>().Call({(Napi::Value)iveGotTheDataFunc});
-            // TODO: I mean, undefined is not the right thing to shove here, but...
-            retData.As<Napi::Promise>().Get("catch").As<Napi::Function>().Call({env.Undefined()});
+            retData.As<Napi::Promise>().Get("catch").As<Napi::Function>().Call({(Napi::Value)itsDeadJimFunc});
         }
         else if (retData.IsArray() || retData.IsString())
         {
@@ -99,23 +138,37 @@ int pam_start_converser(int num_msg, const pam_message **msg, pam_response **res
                 if (retData.As<Napi::Object>().Has("catch") && retData.As<Napi::Object>().Get("catch").IsFunction())
                 {
                     // And has the ability to fail.
-                    // TODO: I mean, undefined is not the right thing to shove here, but...
-                    retData.As<Napi::Object>().Get("catch").As<Napi::Function>().Call({env.Undefined()});
+                    retData.As<Napi::Object>().Get("catch").As<Napi::Function>().Call({(Napi::Value)itsDeadJimFunc});
                 }
+            }
+            else
+            {
+                // C'Mon... at least pretend to be a promise?
+                transaction->pam_fail = true;
+                transaction->baton.unlock();
             }
         }
         else
         {
             // WHAT ARE YOU DOING TO ME?!?!?
-            // TODO: Fail like we know we're supposed to do.
+            transaction->pam_fail = true;
+            transaction->baton.unlock();
         }
     };
-    transaction->baton.lock();
+    transaction->baton.unlock();
     transaction->num_msg = num_msg;
     transaction->msg = msg;
     transaction->convCallback.BlockingCall(transaction, callback);
-    // TODO: Handle the case where promises caught instead of returned.
-    return PAM_SUCCESS;
+    transaction->baton.lock();
+    if (!transaction->pam_fail)
+    {
+        *resp = *transaction->resp;
+        return PAM_SUCCESS;
+    }
+    else
+    {
+        return PAM_CONV_ERR;
+    }
 }
 
 // pam_start = (service: string, user: string, convCallback: ({msg_style: int, msg: string}[]) => Promise<string[]>)|string[] => Promise<pam_handle>
@@ -176,8 +229,7 @@ Napi::Value PamStart(const Napi::CallbackInfo &info)
         {
             if (transaction->pam_status == PAM_SUCCESS)
             {
-                // TODO: Resolve a wrapped pam_handle.
-                deferred.Resolve(env.Undefined());
+                deferred.Resolve(Napi::External<pam_handle_t>::New(env, transaction->handle));
             }
             else
             {
@@ -200,4 +252,4 @@ Napi::Object init(Napi::Env env, Napi::Object exports)
     exports.Set(Napi::String::New(env, "PAM_TEXT_INFO"), Napi::Number::New(env, PAM_TEXT_INFO));
 }
 
-NODE_API_MODULE(pam_faithful, init);
+NODE_API_MODULE(NODE_GYP_MODULE_NAME, init);
