@@ -28,4 +28,4 @@ jobs:
       - name: Run test.
         run: npm run test
       - name: Run root test.
-        run: sudo npm run test:root
+        run: sudo ./node_modules/.bin/jest test/root.test.js
