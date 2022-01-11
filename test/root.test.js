@@ -4,7 +4,7 @@ const os = require('os');
 
 beforeAll(async () => {
     await linuxUser.addUser({ username: "pam-faithful-user", create_home: true, shell: "/bin/bash" })
-    return linuxUser.setPassword("pam-faithful-user", "pam-faithful-password");
+    await linuxUser.setPassword("pam-faithful-user", "pam-faithful-password");
 });
 
 test('Tests are started as root.', () => {
@@ -13,5 +13,5 @@ test('Tests are started as root.', () => {
 });
 
 afterAll(async () => {
-    return linuxUser.removeUser("pam-faithful-user");
+    await linuxUser.removeUser("pam-faithful-user");
 });
