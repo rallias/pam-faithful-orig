@@ -26,6 +26,6 @@
   "gypfile": true,
   "devDependencies": {
     "jest": "^27.4.7",
-    "linux-sys-user": "github:rallias/linux-user"
+    "linux-sys-user": "git+https://github.com/rallias/linux-user"
   }
 }
